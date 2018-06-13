@@ -1,9 +1,11 @@
 package gitbucket.core.model
 
+import com.github.takezoe.slick.blocking.BlockingJdbcProfile
+import gitbucket.core.util.DatabaseConfig
 
 trait Profile {
-  val profile: slick.driver.JdbcProfile
-  import profile.simple._
+  val profile: BlockingJdbcProfile
+  import profile.blockingApi._
 
   /**
    * java.util.Date Mapped Column Types
@@ -14,10 +16,15 @@ trait Profile {
   )
 
   /**
+   * WebHookBase.Event Column Types
+   */
+  implicit val eventColumnType = MappedColumnType.base[WebHook.Event, String](_.name, WebHook.Event.valueOf(_))
+
+  /**
    * Extends Column to add conditional condition
    */
-  implicit class RichColumn(c1: Column[Boolean]){
-    def &&(c2: => Column[Boolean], guard: => Boolean): Column[Boolean] = if(guard) c1 && c2 else c1
+  implicit class RichColumn(c1: Rep[Boolean]) {
+    def &&(c2: => Rep[Boolean], guard: => Boolean): Rep[Boolean] = if (guard) c1 && c2 else c1
   }
 
   /**
@@ -28,26 +35,39 @@ trait Profile {
 }
 
 trait ProfileProvider { self: Profile =>
-  val profile = slick.driver.H2Driver
+
+  lazy val profile = DatabaseConfig.slickDriver
+
 }
 
-trait CoreProfile extends ProfileProvider with Profile
-  with AccessTokenComponent
-  with AccountComponent
-  with ActivityComponent
-  with CollaboratorComponent
-  with CommitCommentComponent
-  with CommitStatusComponent
-  with GroupMemberComponent
-  with IssueComponent
-  with IssueCommentComponent
-  with IssueLabelComponent
-  with LabelComponent
-  with MilestoneComponent
-  with PullRequestComponent
-  with RepositoryComponent
-  with SshKeyComponent
-  with WebHookComponent
-  with PluginComponent
+trait CoreProfile
+    extends ProfileProvider
+    with Profile
+    with AccessTokenComponent
+    with AccountComponent
+    with ActivityComponent
+    with CollaboratorComponent
+    with CommitCommentComponent
+    with CommitStatusComponent
+    with GroupMemberComponent
+    with IssueComponent
+    with IssueCommentComponent
+    with IssueLabelComponent
+    with LabelComponent
+    with PriorityComponent
+    with MilestoneComponent
+    with PullRequestComponent
+    with RepositoryComponent
+    with SshKeyComponent
+    with RepositoryWebHookComponent
+    with RepositoryWebHookEventComponent
+    with AccountWebHookComponent
+    with AccountWebHookEventComponent
+    with AccountFederationComponent
+    with ProtectedBranchComponent
+    with DeployKeyComponent
+    with ReleaseTagComponent
+    with ReleaseAssetComponent
+    with AccountExtraMailAddressComponent
 
 object Profile extends CoreProfile

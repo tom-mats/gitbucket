@@ -1,8 +1,6 @@
 package gitbucket.core.util
 
-import gitbucket.core.model._
-import gitbucket.core.util.Directory._
-import gitbucket.core.util.ControlUtil._
+import gitbucket.core.util.SyntaxSugars._
 
 import org.apache.commons.io.FileUtils
 import org.eclipse.jgit.api.Git
@@ -14,14 +12,13 @@ import org.eclipse.jgit.merge._
 import org.eclipse.jgit.errors._
 
 import java.nio.file._
-import java.util.Date
 import java.io.File
 
 object GitSpecUtil {
-  def withTestFolder[U](f: File => U) {
+  def withTestFolder[U](f: File => U): U = {
     val folder = new File(System.getProperty("java.io.tmpdir"), "test-" + System.nanoTime)
-    if(!folder.mkdirs()){
-      throw new java.io.IOException("can't create folder "+folder.getAbsolutePath)
+    if (!folder.mkdirs()) {
+      throw new java.io.IOException("can't create folder " + folder.getAbsolutePath)
     }
     try {
       f(folder)
@@ -29,7 +26,7 @@ object GitSpecUtil {
       FileUtils.deleteQuietly(folder)
     }
   }
-  def withTestRepository[U](f: Git => U) = withTestFolder(folder => using(Git.open(createTestRepository(folder)))(f))
+  def withTestRepository[U](f: Git => U): U = withTestFolder(folder => using(Git.open(createTestRepository(folder)))(f))
   def createTestRepository(dir: File): File = {
     RepositoryCache.clear()
     FileUtils.deleteQuietly(dir)
@@ -37,26 +34,45 @@ object GitSpecUtil {
     JGitUtil.initRepository(dir)
     dir
   }
-  def createFile(git: Git, branch: String, name: String, content: String,
-                 autorName: String = "dummy", autorEmail: String = "dummy@example.com",
-                 message: String = "test commit") {
+  def createFile(
+    git: Git,
+    branch: String,
+    name: String,
+    content: String,
+    autorName: String = "dummy",
+    autorEmail: String = "dummy@example.com",
+    message: String = "test commit"
+  ): Unit = {
     val builder = DirCache.newInCore.builder()
     val inserter = git.getRepository.newObjectInserter()
     val headId = git.getRepository.resolve(branch + "^{commit}")
-    if(headId!=null){
-      JGitUtil.processTree(git, headId){ (path, tree) =>
-        if(name != path){
+    if (headId != null) {
+      JGitUtil.processTree(git, headId) { (path, tree) =>
+        if (name != path) {
           builder.add(JGitUtil.createDirCacheEntry(path, tree.getEntryFileMode, tree.getEntryObjectId))
         }
       }
     }
-    builder.add(JGitUtil.createDirCacheEntry(name, FileMode.REGULAR_FILE,
-      inserter.insert(Constants.OBJ_BLOB, content.getBytes("UTF-8"))))
+    builder.add(
+      JGitUtil.createDirCacheEntry(
+        name,
+        FileMode.REGULAR_FILE,
+        inserter.insert(Constants.OBJ_BLOB, content.getBytes("UTF-8"))
+      )
+    )
     builder.finish()
-    JGitUtil.createNewCommit(git, inserter, headId, builder.getDirCache.writeTree(inserter),
-      branch, autorName, autorEmail, message)
+    JGitUtil.createNewCommit(
+      git,
+      inserter,
+      headId,
+      builder.getDirCache.writeTree(inserter),
+      branch,
+      autorName,
+      autorEmail,
+      message
+    )
     inserter.flush()
-    inserter.release()
+    inserter.close()
   }
   def getFile(git: Git, branch: String, path: String) = {
     val revCommit = JGitUtil.getRevCommitFromId(git, git.getRepository.resolve(branch))
@@ -73,7 +89,7 @@ object GitSpecUtil {
     }
     JGitUtil.getContentInfo(git, path, objectId)
   }
-  def mergeAndCommit(git: Git, into:String, branch:String, message:String = null):Unit = {
+  def mergeAndCommit(git: Git, into: String, branch: String, message: String = null): Unit = {
     val repository = git.getRepository
     val merger = MergeStrategy.RECURSIVE.newMerger(repository, true)
     val mergeBaseTip = repository.resolve(into)
@@ -83,11 +99,11 @@ object GitSpecUtil {
     } catch {
       case e: NoMergeBaseException => true
     }
-    if(conflicted){
+    if (conflicted) {
       throw new RuntimeException("conflict!")
     }
-    val mergeTipCommit = using(new RevWalk( repository ))(_.parseCommit( mergeTip ))
-    val committer = mergeTipCommit.getCommitterIdent;
+    val mergeTipCommit = using(new RevWalk(repository))(_.parseCommit(mergeTip))
+    val committer = mergeTipCommit.getCommitterIdent
     // creates merge commit
     val mergeCommit = new CommitBuilder()
     mergeCommit.setTreeId(merger.getResultTreeId)
@@ -99,7 +115,7 @@ object GitSpecUtil {
     val inserter = repository.newObjectInserter
     val mergeCommitId = inserter.insert(mergeCommit)
     inserter.flush()
-    inserter.release()
+    inserter.close()
     // update refs
     val refUpdate = repository.updateRef(into)
     refUpdate.setNewObjectId(mergeCommitId)

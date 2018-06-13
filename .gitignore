@@ -1,5 +1,7 @@
 *.class
 *.log
+.ensime
+.ensime_cache
 
 # sbt specific
 dist/*
@@ -14,8 +16,11 @@ project/plugins/project/
 .classpath
 .project
 .cache
+.cache-main
+.cache-tests
 .settings
 
 # IntelliJ specific
 .idea/
 .idea_modules/
+*.iml

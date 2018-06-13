@@ -19,27 +19,18 @@ $(function(){
   });
 
   // anchor icon for markdown
-  $('.markdown-head').mouseenter(function(e){
-    $(e.target).children('a.markdown-anchor-link').show();
+  $('.markdown-head').on('mouseenter', function(e){
+    $(this).find('span.octicon').css('visibility', 'visible');
   });
-  $('.markdown-head').mouseleave(function(e){
-    var anchorLink = $(e.target).children('a.markdown-anchor-link');
-    if(anchorLink.data('active') !== true){
-      anchorLink.hide();
-    }
-  });
-
-  $('a.markdown-anchor-link').mouseenter(function(e){
-    $(e.target).data('active', true);
-  });
-
-  $('a.markdown-anchor-link').mouseleave(function(e){
-    $(e.target).data('active', false);
-    $(e.target).hide();
+  $('.markdown-head').on('mouseleave', function(e){
+    $(this).find('span.octicon').css('visibility', 'hidden');
   });
 
   // syntax highlighting by google-code-prettify
   prettyPrint();
+
+  // Suppress transition animation on load
+  $("body").removeClass("page-load");
 });
 
 function displayErrors(data, elem){
@@ -87,10 +78,10 @@ function displayErrors(data, elem){
 function diffUsingJS(oldTextId, newTextId, outputId, viewType, ignoreSpace) {
   var old = $('#'+oldTextId), head = $('#'+newTextId);
   var render = new JsDiffRender({
-    oldText: old.val(),
-    oldTextName: old.data('file-name'),
-    newText: head.val(),
-    newTextName: head.data('file-name'),
+    oldText: old.attr('data-val'),
+    oldTextName: old.attr('data-file-name'),
+    newText: head.attr('data-val'),
+    newTextName: head.attr('data-file-name'),
     ignoreSpace: ignoreSpace,
     contextSize: 4
   });
@@ -125,7 +116,7 @@ function JsDiffRender(params){
     return function(ln){
       if(dom===null){
         var html = prettyPrintOne(
-          text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;').replace(/>/g,'&gt;'),
+          text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;').replace(/>/g,'&gt;').replace(/^\n/, '\n\n'),
           (/\.([^.]*)$/.exec(fileName)||[])[1],
           true);
         var re = /<li[^>]*id="?L([0-9]+)"?[^>]*>(.*?)<\/li>/gi, h;
@@ -158,7 +149,7 @@ $.extend(JsDiffRender.prototype,{
             $('<tr>').append(
               lineNum('old',o.base, o.change),
               $('<td class="body">').html(o.base ? baseTextDom(o.base): "").addClass(o.change),
-              lineNum('old',o.head, o.change),
+              lineNum('new',o.head, o.change),
               $('<td class="body">').html(o.head ? headTextDom(o.head): "").addClass(o.change)
               ).appendTo(tbody);
             break;
@@ -167,7 +158,7 @@ $.extend(JsDiffRender.prototype,{
             $('<tr>').append(
               lineNum('old',o.base, 'delete'),
               $('<td class="body">').append(ld.base).addClass('delete'),
-              lineNum('old',o.head, 'insert'),
+              lineNum('new',o.head, 'insert'),
               $('<td class="body">').append(ld.head).addClass('insert')
               ).appendTo(tbody);
             break;
@@ -361,10 +352,10 @@ function scrollIntoView(target){
 }
 
 /**
- * escape html
- */
+* escape html
+*/
 function escapeHtml(text){
-  return text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;').replace(/>/g,'&gt;');
+ return text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;').replace(/>/g,'&gt;');
 }
 
 /**
@@ -388,7 +379,7 @@ function string_score(string, word) {
       strLength = string.length,
       lWord = word.toUpperCase(),
       wordLength = word.length;
-      
+
   return   calc(zero,        0,    0,            0, 0,                []);
   function calc(score, startAt, skip, runningScore, i, matchingPositions){
     if( i < wordLength) {
@@ -452,7 +443,7 @@ function string_score(string, word) {
  * @param word    {String}        search word
  * @param strings {Array[String]} search targets
  * @param limit   {Integer}       result limit
- * @return {Array[{score:"float matching score", string:"string target string", matchingPositions:"Array[Interger] matchng positions"}]}
+ * @return {Array[{score:"float matching score", string:"string target string", matchingPositions:"Array[Integer] matching positions"}]}
  */
 function string_score_sort(word, strings, limit){
   var ret = [], i=0, l = (word==="")?Math.min(strings.length, limit):strings.length;
@@ -475,7 +466,7 @@ function string_score_sort(word, strings, limit){
 }
 /**
  * highlight by result.
- * @param score {string:"string target string", matchingPositions:"Array[Interger] matchng positions"}
+ * @param score {string:"string target string", matchingPositions:"Array[Integer] matching positions"}
  * @param highlight tag ex: '<b>'
  * @return array of highlighted html elements.
  */
@@ -615,7 +606,7 @@ var imageDiff ={
       .css({marginTop:size.height-5});
     var bar = $('<hr class="diff-silde-bar">').css({top:size.height+size.paddingTop});
     var div = $('<div class="diff-image-stack">')
-      .css({height:size.height+size.paddingTop, paddingLeft:size.padding})
+      .css({height:size.height+size.paddingTop*2, paddingLeft:size.padding})
       .append(diffOld, diffNew, bar, handle);
     return {
       neo:diffNew,
@@ -703,3 +694,67 @@ var imageDiff ={
   }
 };
 
+/**
+ * function for account extra mail address form control.
+ */
+function addExtraMailAddress() {
+  var fieldset = $('#extraMailAddresses');
+  var count = $('.extraMailAddress').length;
+  var html =   '<input type="text" name="extraMailAddresses[' + count + ']" id="extraMailAddresses[' + count + ']" class="form-control extraMailAddress"/>'
+  + '<span id="error-extraMailAddresses_' + count + '" class="error"></span>';
+  fieldset.append(html);
+}
+
+/**
+ * function for check account extra mail address form control.
+ */
+function checkExtraMailAddress(){
+  if ($(this).val() != ""){
+    var needAdd = true;
+    $('.extraMailAddress').each(function(){
+      if($(this).val() == ""){
+        needAdd = false;
+        return false;
+      }
+      return true;
+    });
+    if (needAdd){
+      addExtraMailAddress();
+    }
+  }
+  else {
+    $(this).remove();
+  }
+}
+
+/**
+ * function for extracting markdown from comment area.
+ * @param commentArea a comment area
+ * @returns {*|jQuery}
+ */
+var extractMarkdown = function(commentArea){
+  $('body').append('<div id="tmp"></div>');
+  $('#tmp').html(commentArea);
+  var markdown = $('#tmp textarea').val();
+  $('#tmp').remove();
+  return markdown;
+};
+
+/**
+ * function for applying checkboxes status of task list.
+ * @param commentArea a comment area
+ * @param checkboxes checkboxes for task list
+ * @returns {string} a markdown that applied checkbox status
+ */
+var applyTaskListCheckedStatus = function(commentArea, checkboxes) {
+  var ss = [],
+    markdown = extractMarkdown(commentArea),
+    xs = markdown.split(/- \[[x| ]\]/g);
+  for (var i=0; i<xs.length; i++) {
+    ss.push(xs[i]);
+    if (checkboxes.eq(i).prop('checked')) ss.push('- [x]');
+    else ss.push('- [ ]');
+  }
+  ss.pop();
+  return ss.join('');
+};

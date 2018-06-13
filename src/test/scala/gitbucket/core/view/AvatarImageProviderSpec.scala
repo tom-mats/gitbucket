@@ -1,119 +1,151 @@
 package gitbucket.core.view
 
+import java.text.SimpleDateFormat
 import java.util.Date
+import javax.servlet.http.{HttpServletRequest, HttpSession}
 
-import gitbucket.core.model.Account
-import gitbucket.core.service.{SystemSettingsService, RequestCache}
 import gitbucket.core.controller.Context
-import org.specs2.mutable._
-import org.specs2.mock.Mockito
-import SystemSettingsService.SystemSettings
-import javax.servlet.http.HttpServletRequest
+import gitbucket.core.model.Account
+import gitbucket.core.service.RequestCache
+import gitbucket.core.service.SystemSettingsService.SystemSettings
+import org.mockito.Mockito._
+import org.scalatest.FunSpec
+import org.scalatest.mockito.MockitoSugar
 import play.twirl.api.Html
 
-class AvatarImageProviderSpec extends Specification with Mockito {
+class AvatarImageProviderSpec extends FunSpec with MockitoSugar {
 
   val request = mock[HttpServletRequest]
-  request.getRequestURL  returns new StringBuffer("http://localhost:8080/path.html")
-  request.getRequestURI  returns "/path.html"
-  request.getContextPath returns ""
+  val session = mock[HttpSession]
+  when(request.getRequestURL).thenReturn(new StringBuffer("http://localhost:8080/path.html"))
+  when(request.getRequestURI).thenReturn("/path.html")
+  when(request.getContextPath).thenReturn("")
+  when(request.getSession).thenReturn(session)
 
-  "getAvatarImageHtml" should {
-    "show Gravatar image for no image account if gravatar integration is enabled" in {
+  describe("getAvatarImageHtml") {
+    it("should show Gravatar image for no image account if gravatar integration is enabled") {
       implicit val context = Context(createSystemSettings(true), None, request)
       val provider = new AvatarImageProviderImpl(Some(createAccount(None)))
 
-      provider.toHtml("user", 32).toString mustEqual
-        "<img src=\"https://www.gravatar.com/avatar/d41d8cd98f00b204e9800998ecf8427e?s=32&d=retro&r=g\" class=\"avatar\" style=\"width: 32px; height: 32px;\" />"
+      assert(
+        provider.toHtml("user", 32).toString ==
+          "<img src=\"https://www.gravatar.com/avatar/d41d8cd98f00b204e9800998ecf8427e?s=32&d=retro&r=g\" class=\"avatar\" style=\"width: 32px; height: 32px;\" />"
+      )
     }
 
-    "show uploaded image even if gravatar integration is enabled" in {
+    it("should show uploaded image even if gravatar integration is enabled") {
       implicit val context = Context(createSystemSettings(true), None, request)
-      val provider = new AvatarImageProviderImpl(Some(createAccount(Some("icon.png"))))
+      val account = createAccount((Some("icon.png")))
+      val date = new SimpleDateFormat("yyyyMMddHHmmss").format(account.updatedDate)
+      val provider = new AvatarImageProviderImpl(Some(account))
 
-      provider.toHtml("user", 32).toString mustEqual
-        "<img src=\"/user/_avatar\" class=\"avatar\" style=\"width: 32px; height: 32px;\" />"
+      assert(
+        provider.toHtml("user", 32).toString ==
+          s"""<img src="/user/_avatar?${date}" class="avatar" style="width: 32px; height: 32px;" />"""
+      )
     }
 
-    "show local image for no image account if gravatar integration is disabled" in {
+    it("should show local image for no image account if gravatar integration is disabled") {
       implicit val context = Context(createSystemSettings(false), None, request)
-      val provider = new AvatarImageProviderImpl(Some(createAccount(None)))
+      val account = createAccount(None)
+      val date = new SimpleDateFormat("yyyyMMddHHmmss").format(account.updatedDate)
+      val provider = new AvatarImageProviderImpl(Some(account))
 
-      provider.toHtml("user", 32).toString mustEqual
-        "<img src=\"/user/_avatar\" class=\"avatar\" style=\"width: 32px; height: 32px;\" />"
+      assert(
+        provider.toHtml("user", 32).toString ==
+          s"""<img src="/user/_avatar?${date}" class="avatar" style="width: 32px; height: 32px;" />"""
+      )
     }
 
-    "show Gravatar image for specified mail address if gravatar integration is enabled" in {
+    it("should show Gravatar image for specified mail address if gravatar integration is enabled") {
       implicit val context = Context(createSystemSettings(true), None, request)
       val provider = new AvatarImageProviderImpl(None)
 
-      provider.toHtml("user", 20, "hoge@hoge.com").toString mustEqual
-        "<img src=\"https://www.gravatar.com/avatar/4712f9b0e63f56ad952ad387eaa23b9c?s=20&d=retro&r=g\" class=\"avatar-mini\" style=\"width: 20px; height: 20px;\" />"
+      assert(
+        provider.toHtml("user", 20, "hoge@hoge.com").toString ==
+          "<img src=\"https://www.gravatar.com/avatar/4712f9b0e63f56ad952ad387eaa23b9c?s=20&d=retro&r=g\" class=\"avatar-mini\" style=\"width: 20px; height: 20px;\" />"
+      )
     }
 
-    "show unknown image for unknown user if gravatar integration is enabled" in {
+    it("should show unknown image for unknown user if gravatar integration is enabled") {
       implicit val context = Context(createSystemSettings(true), None, request)
       val provider = new AvatarImageProviderImpl(None)
 
-      provider.toHtml("user", 20).toString mustEqual
-        "<img src=\"/_unknown/_avatar\" class=\"avatar-mini\" style=\"width: 20px; height: 20px;\" />"
+      assert(
+        provider.toHtml("user", 20).toString ==
+          "<img src=\"/_unknown/_avatar\" class=\"avatar-mini\" style=\"width: 20px; height: 20px;\" />"
+      )
     }
 
-    "show unknown image for specified mail address if gravatar integration is disabled" in {
+    it("should show unknown image for specified mail address if gravatar integration is disabled") {
       implicit val context = Context(createSystemSettings(false), None, request)
       val provider = new AvatarImageProviderImpl(None)
 
-      provider.toHtml("user", 20, "hoge@hoge.com").toString mustEqual
-        "<img src=\"/_unknown/_avatar\" class=\"avatar-mini\" style=\"width: 20px; height: 20px;\" />"
+      assert(
+        provider.toHtml("user", 20, "hoge@hoge.com").toString ==
+          "<img src=\"/_unknown/_avatar\" class=\"avatar-mini\" style=\"width: 20px; height: 20px;\" />"
+      )
     }
 
-    "add tooltip if it's enabled" in {
+    it("should add tooltip if it's enabled") {
       implicit val context = Context(createSystemSettings(false), None, request)
       val provider = new AvatarImageProviderImpl(None)
 
-      provider.toHtml("user", 20, "hoge@hoge.com", true).toString mustEqual
-        "<img src=\"/_unknown/_avatar\" class=\"avatar-mini\" style=\"width: 20px; height: 20px;\" data-toggle=\"tooltip\" title=\"user\"/>"
+      assert(
+        provider.toHtml("user", 20, "hoge@hoge.com", true).toString ==
+          "<img src=\"/_unknown/_avatar\" class=\"avatar-mini\" style=\"width: 20px; height: 20px;\" data-toggle=\"tooltip\" title=\"user\"/>"
+      )
     }
   }
 
   private def createAccount(image: Option[String]) =
     Account(
-      userName       = "user",
-      fullName       = "user@localhost",
-      mailAddress    = "",
-      password       = "",
-      isAdmin        = false,
-      url            = None,
+      userName = "user",
+      fullName = "user@localhost",
+      mailAddress = "",
+      password = "",
+      isAdmin = false,
+      url = None,
       registeredDate = new Date(),
-      updatedDate    = new Date(),
-      lastLoginDate  = None,
-      image          = image,
+      updatedDate = new Date(),
+      lastLoginDate = None,
+      image = image,
       isGroupAccount = false,
-      isRemoved      = false)
+      isRemoved = false,
+      description = None
+    )
 
   private def createSystemSettings(useGravatar: Boolean) =
     SystemSettings(
-      baseUrl                  = None,
-      information              = None,
+      baseUrl = None,
+      information = None,
       allowAccountRegistration = false,
-      allowAnonymousAccess     = true,
+      allowAnonymousAccess = true,
       isCreateRepoOptionPublic = true,
-      gravatar                 = useGravatar,
-      notification             = false,
-      activityLogLimit         = None,
-      ssh                      = false,
-      sshPort                  = None,
-      smtp                     = None,
-      ldapAuthentication       = false,
-      ldap                     = None)
+      gravatar = useGravatar,
+      notification = false,
+      activityLogLimit = None,
+      ssh = false,
+      sshHost = None,
+      sshPort = None,
+      useSMTP = false,
+      smtp = None,
+      ldapAuthentication = false,
+      ldap = None,
+      oidcAuthentication = false,
+      oidc = None,
+      skinName = "skin-blue",
+      showMailAddress = false
+    )
 
   /**
    * Adapter to test AvatarImageProviderImpl.
    */
   class AvatarImageProviderImpl(account: Option[Account]) extends AvatarImageProvider with RequestCache {
 
-    def toHtml(userName: String, size: Int,  mailAddress: String = "", tooltip: Boolean = false)
-              (implicit context: Context): Html = getAvatarImageHtml(userName, size, mailAddress, tooltip)
+    def toHtml(userName: String, size: Int, mailAddress: String = "", tooltip: Boolean = false)(
+      implicit context: Context
+    ): Html = getAvatarImageHtml(userName, size, mailAddress, tooltip)
 
     override def getAccountByMailAddress(mailAddress: String)(implicit context: Context): Option[Account] = account
     override def getAccountByUserName(userName: String)(implicit context: Context): Option[Account] = account
