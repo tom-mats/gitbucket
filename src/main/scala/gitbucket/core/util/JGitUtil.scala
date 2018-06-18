@@ -3,6 +3,7 @@ package gitbucket.core.util
 import java.io.{ByteArrayOutputStream, File, FileInputStream, InputStream}
 
 import gitbucket.core.service.RepositoryService
+import gitbucket.core.plugin.PluginRegistry
 import org.eclipse.jgit.api.Git
 import Directory._
 import StringUtil._
@@ -977,8 +978,11 @@ object JGitUtil {
       val viewer = if (FileUtil.isImage(path)) "image" else if (large) "large" else "other"
       val bytes = if (viewer == "other") JGitUtil.getContentFromId(git, objectId, false) else None
       val size = Some(getContentSize(loader))
+      val extention = FileUtil.getExtension(path)
+      val renderer = PluginRegistry().getRenderer(extension)
+      val ownrenderer = if (renderer != DefaultRenderer) true else false
 
-      if (viewer == "other") {
+      if (ownrenderer || viewer == "other") {
         if (!isLfs && bytes.isDefined && FileUtil.isText(bytes.get)) {
           // text
           ContentInfo(
