@@ -976,10 +976,10 @@ object JGitUtil {
       val isLfs = isLfsPointer(loader)
       val large = FileUtil.isLarge(loader.getSize)
       val viewer = if (FileUtil.isImage(path)) "image" else if (large) "large" else "other"
-      val bytes = if (viewer == "other") JGitUtil.getContentFromId(git, objectId, false) else None
-      val size = Some(getContentSize(loader))
       val extension = FileUtil.getExtension(path)
       val ownrenderer = PluginRegistry().hasOwnRenderer(extension)
+      val bytes = if (viewer == "other" || ownrenderer) JGitUtil.getContentFromId(git, objectId, true) else None
+      val size = Some(getContentSize(loader))
 
       if (ownrenderer || viewer == "other") {
         if (!isLfs && bytes.isDefined && FileUtil.isText(bytes.get)) {
