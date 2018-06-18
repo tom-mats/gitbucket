@@ -110,6 +110,7 @@ class PluginRegistry {
       }
     }
   }
+  def hasOwnRenderer(extension: String): Boolean = renderers.contains(extension)
 
   def addAccountHook(accountHook: AccountHook): Unit = accountHooks.add(accountHook)
 
