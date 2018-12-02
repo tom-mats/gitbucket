@@ -3,7 +3,8 @@
   isManageable: Boolean,
   repository: gitbucket.core.service.RepositoryService.RepositoryInfo,
   pullreq: Option[gitbucket.core.model.PullRequest] = None,
-  commitId: Option[String] = None)(implicit context: gitbucket.core.controller.Context)
+  commitId: Option[String] = None,
+  renderScript: Boolean = true)(implicit context: gitbucket.core.controller.Context)
 @import gitbucket.core.view.helpers
 @issueOrPullRequest()={ @if(issue.exists(_.isPullRequest))( "pull request" )else( "issue" ) }
 @showFormattedComment(comment: gitbucket.core.model.IssueComment)={
@@ -31,12 +32,13 @@
   </div>
   <div class="panel-body markdown-body" id="commentContent-@comment.commentId">
     @helpers.markdown(
-      markdown = comment.content,
-      repository = repository,
-      enableWikiLink = false,
-      enableRefsLink = true,
-      enableLineBreaks = true,
-      enableTaskList = true,
+      markdown           = comment.content,
+      repository         = repository,
+      branch             = repository.repository.defaultBranch,
+      enableWikiLink     = false,
+      enableRefsLink     = true,
+      enableLineBreaks   = true,
+      enableTaskList     = true,
       hasWritePermission = isManageable
     )
   </div>
@@ -56,12 +58,13 @@
     </div>
     <div class="panel-body markdown-body" id="issueContent">
       @helpers.markdown(
-        markdown = issue.get.content getOrElse "No description provided.",
-        repository = repository,
-        enableWikiLink = false,
-        enableRefsLink = true,
-        enableLineBreaks = true,
-        enableTaskList = true,
+        markdown           = issue.get.content getOrElse "No description provided.",
+        repository         = repository,
+        branch             = repository.repository.defaultBranch,
+        enableWikiLink     = false,
+        enableRefsLink     = true,
+        enableLineBreaks   = true,
+        enableTaskList     = true,
         hasWritePermission = isManageable
       )
     </div>
@@ -111,7 +114,7 @@
           </div>
           <div style="discussion-item-content">
             @defining(comment.content.split(":")){ case Array(issueId, rest @ _*) =>
-              <strong>@helpers.issueLink(repository, issueId.toInt): @rest.mkString(":")</strong>
+              @helpers.issueLink(repository, issueId.toInt, rest.mkString(":"))
             }
           </div>
         </div>
@@ -267,18 +270,20 @@
       </div>
       <div class="panel-body markdown-body commit-commentContent-@comment.commentId">
         @helpers.markdown(
-          markdown = comment.content,
-          repository = repository,
-          enableWikiLink = false,
-          enableRefsLink = true,
-          enableLineBreaks = true,
-          enableTaskList = true,
+          markdown           = comment.content,
+          repository         = repository,
+          branch             = repository.repository.defaultBranch,
+          enableWikiLink     = false,
+          enableRefsLink     = true,
+          enableLineBreaks   = true,
+          enableTaskList     = true,
           hasWritePermission = isManageable
         )
       </div>
     </div>
   }
 }
+@if(renderScript){
 <script>
 $(function(){
 @if(issue.isDefined){
@@ -415,3 +420,4 @@ $(function(){
 
 });
 </script>
+}

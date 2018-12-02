@@ -351,9 +351,11 @@ trait IssuesService {
     implicit s: Session
   ) =
     Issues filter { t1 =>
-      repos
-        .map { case (owner, repository) => t1.byRepository(owner, repository) }
-        .foldLeft[Rep[Boolean]](false)(_ || _) &&
+      (if (repos.size == 1) {
+         t1.byRepository(repos.head._1, repos.head._2)
+       } else {
+         ((t1.userName ++ "/" ++ t1.repositoryName) inSetBind (repos.map { case (owner, repo) => s"$owner/$repo" }))
+       }) &&
       (t1.closed === (condition.state == "closed").bind) &&
       (t1.milestoneId.? isEmpty, condition.milestone == Some(None)) &&
       (t1.priorityId.? isEmpty, condition.priority == Some(None)) &&
@@ -630,7 +632,7 @@ trait IssuesService {
    * @param query the keywords separated by whitespace.
    * @return issues with comment count and matched content of issue or comment
    */
-  def searchIssuesByKeyword(owner: String, repository: String, query: String)(
+  def searchIssuesByKeyword(owner: String, repository: String, query: String, pullRequest: Boolean)(
     implicit s: Session
   ): List[(Issue, Int, String)] = {
     //import slick.driver.JdbcDriver.likeEncode
@@ -638,7 +640,9 @@ trait IssuesService {
 
     // Search Issue
     val issues = Issues
-      .filter(_.byRepository(owner, repository))
+      .filter { t =>
+        t.byRepository(owner, repository) && t.pullRequest === pullRequest.bind
+      }
       .join(IssueOutline)
       .on {
         case (t1, t2) =>
@@ -673,11 +677,12 @@ trait IssuesService {
       }
       .filter {
         case ((t1, t2), t3) =>
-          keywords
-            .map { query =>
-              t1.content.toLowerCase like (s"%${likeEncode(query)}%", '^')
-            }
-            .reduceLeft(_ && _)
+          t2.pullRequest === pullRequest.bind &&
+            keywords
+              .map { query =>
+                t1.content.toLowerCase like (s"%${likeEncode(query)}%", '^')
+              }
+              .reduceLeft(_ && _)
       }
       .map {
         case ((t1, t2), t3) =>
@@ -688,7 +693,7 @@ trait IssuesService {
       .union(comments)
       .sortBy {
         case (issue, commentId, _, _) =>
-          issue.issueId -> commentId
+          issue.issueId.desc -> commentId
       }
       .list
       .splitWith {

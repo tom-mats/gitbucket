@@ -1,5 +1,6 @@
 package gitbucket.core.controller
 
+import gitbucket.core.plugin.PluginRegistry
 import org.scalatra.MovedPermanently
 
 class PreProcessController extends PreProcessControllerBase
@@ -7,18 +8,19 @@ class PreProcessController extends PreProcessControllerBase
 trait PreProcessControllerBase extends ControllerBase {
 
   /**
-   * Provides GitHub compatible URLs for Git client.
-   *
-   * <ul>
-   *   <li>git clone http://localhost:8080/owner/repo</li>
-   *   <li>git clone http://localhost:8080/owner/repo.git</li>
-   * </ul>
-   *
-   * @see https://git-scm.com/book/en/v2/Git-Internals-Transfer-Protocols
+   * Provides GitHub compatible URLs (e.g. http://localhost:8080/owner/repo.git) for Git client.
    */
   get("/*/*/info/refs") {
     val query = Option(request.getQueryString).map("?" + _).getOrElse("")
     halt(MovedPermanently(baseUrl + "/git" + request.getRequestURI + query))
+  }
+
+  /**
+   * Provides GitHub compatible URLs for GitLFS client.
+   */
+  post("/*/*/info/lfs/objects/batch") {
+    val dispatcher = request.getRequestDispatcher("/git" + request.getRequestURI)
+    dispatcher.forward(request, response)
   }
 
   /**
@@ -29,7 +31,10 @@ trait PreProcessControllerBase extends ControllerBase {
    */
   get(!context.settings.allowAnonymousAccess, context.loginAccount.isEmpty) {
     if (!context.currentPath.startsWith("/assets") && !context.currentPath.startsWith("/signin") &&
-        !context.currentPath.startsWith("/register") && !context.currentPath.endsWith("/info/refs")) {
+        !context.currentPath.startsWith("/register") && !context.currentPath.endsWith("/info/refs") &&
+        !PluginRegistry().getAnonymousAccessiblePaths().exists { path =>
+          context.currentPath.startsWith(path)
+        }) {
       Unauthorized()
     } else {
       pass()

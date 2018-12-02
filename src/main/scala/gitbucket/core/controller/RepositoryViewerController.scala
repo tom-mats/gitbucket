@@ -7,14 +7,13 @@ import gitbucket.core.plugin.PluginRegistry
 import gitbucket.core.repo.html
 import gitbucket.core.helper
 import gitbucket.core.service._
+import gitbucket.core.service.RepositoryCommitFileService.CommitFile
 import gitbucket.core.util._
-import gitbucket.core.util.JGitUtil._
 import gitbucket.core.util.StringUtil._
 import gitbucket.core.util.SyntaxSugars._
 import gitbucket.core.util.Implicits._
 import gitbucket.core.util.Directory._
-import gitbucket.core.model.{Account, CommitState, CommitStatus, WebHook}
-import gitbucket.core.service.WebHookService._
+import gitbucket.core.model.{Account, CommitState, CommitStatus}
 import gitbucket.core.view
 import gitbucket.core.view.helpers
 import org.apache.commons.compress.archivers.{ArchiveEntry, ArchiveOutputStream}
@@ -24,14 +23,12 @@ import org.apache.commons.compress.compressors.bzip2.BZip2CompressorOutputStream
 import org.apache.commons.compress.compressors.gzip.GzipCompressorOutputStream
 import org.apache.commons.compress.compressors.xz.XZCompressorOutputStream
 import org.apache.commons.compress.utils.IOUtils
-import org.scalatra.forms._
 import org.apache.commons.io.FileUtils
+import org.scalatra.forms._
 import org.eclipse.jgit.api.{ArchiveCommand, Git}
 import org.eclipse.jgit.archive.{TgzFormat, ZipFormat}
-import org.eclipse.jgit.dircache.{DirCache, DirCacheBuilder}
 import org.eclipse.jgit.errors.MissingObjectException
 import org.eclipse.jgit.lib._
-import org.eclipse.jgit.transport.{ReceiveCommand, ReceivePack}
 import org.eclipse.jgit.treewalk.TreeWalk
 import org.eclipse.jgit.treewalk.filter.PathFilter
 import org.json4s.jackson.Serialization
@@ -41,6 +38,7 @@ import org.scalatra.i18n.Messages
 class RepositoryViewerController
     extends RepositoryViewerControllerBase
     with RepositoryService
+    with RepositoryCommitFileService
     with AccountService
     with ActivityService
     with IssuesService
@@ -63,6 +61,7 @@ class RepositoryViewerController
  */
 trait RepositoryViewerControllerBase extends ControllerBase {
   self: RepositoryService
+    with RepositoryCommitFileService
     with AccountService
     with ActivityService
     with IssuesService
@@ -116,6 +115,12 @@ trait RepositoryViewerControllerBase extends ControllerBase {
     diff: Option[String]
   )
 
+  case class TagForm(
+    commitId: String,
+    tagName: String,
+    message: Option[String]
+  )
+
   val uploadForm = mapping(
     "branch" -> trim(label("Branch", text(required))),
     "path" -> trim(label("Path", text())),
@@ -152,6 +157,12 @@ trait RepositoryViewerControllerBase extends ControllerBase {
     "diff" -> optional(text())
   )(CommentForm.apply)
 
+  val tagForm = mapping(
+    "commitId" -> trim(label("Commit id", text(required))),
+    "tagName" -> trim(label("Tag name", text(required))),
+    "message" -> trim(label("Message", optional(text())))
+  )(TagForm.apply)
+
   /**
    * Returns converted HTML from Markdown for preview.
    */
@@ -163,7 +174,7 @@ trait RepositoryViewerControllerBase extends ControllerBase {
         helpers.renderMarkup(
           filePath = List(f),
           fileContent = params("content"),
-          branch = "master",
+          branch = repository.repository.defaultBranch,
           repository = repository,
           enableWikiLink = params("enableWikiLink").toBoolean,
           enableRefsLink = params("enableRefsLink").toBoolean,
@@ -173,6 +184,7 @@ trait RepositoryViewerControllerBase extends ControllerBase {
         helpers.markdown(
           markdown = params("content"),
           repository = repository,
+          branch = repository.repository.defaultBranch,
           enableWikiLink = params("enableWikiLink").toBoolean,
           enableRefsLink = params("enableRefsLink").toBoolean,
           enableLineBreaks = params("enableLineBreaks").toBoolean,
@@ -306,13 +318,34 @@ trait RepositoryViewerControllerBase extends ControllerBase {
       CommitFile(line.substring(0, i).trim, line.substring(i + 1).trim)
     }
 
+    val newFiles = files.map { file =>
+      file.copy(name = if (form.path.length == 0) file.name else s"${form.path}/${file.name}")
+    }
+
     commitFiles(
       repository = repository,
       branch = form.branch,
       path = form.path,
       files = files,
-      message = form.message.getOrElse("Add files via upload")
-    )
+      message = form.message.getOrElse("Add files via upload"),
+      loginAccount = context.loginAccount.get
+    ) {
+      case (git, headTip, builder, inserter) =>
+        JGitUtil.processTree(git, headTip) { (path, tree) =>
+          if (!newFiles.exists(_.name.contains(path))) {
+            builder.add(JGitUtil.createDirCacheEntry(path, tree.getEntryFileMode, tree.getEntryObjectId))
+          }
+        }
+
+        newFiles.foreach { file =>
+          val bytes =
+            FileUtils.readFileToByteArray(new File(getTemporaryDir(session.getId), FileUtil.checkFilename(file.id)))
+          builder.add(
+            JGitUtil.createDirCacheEntry(file.name, FileMode.REGULAR_FILE, inserter.insert(Constants.OBJ_BLOB, bytes))
+          )
+          builder.finish()
+        }
+    }
 
     if (form.path.length == 0) {
       redirect(s"/${repository.owner}/${repository.name}/tree/${form.branch}")
@@ -330,17 +363,23 @@ trait RepositoryViewerControllerBase extends ControllerBase {
       git =>
         val revCommit = JGitUtil.getRevCommitFromId(git, git.getRepository.resolve(branch))
 
-        getPathObjectId(git, path, revCommit).map { objectId =>
-          val paths = path.split("/")
-          html.editor(
-            branch = branch,
-            repository = repository,
-            pathList = paths.take(paths.size - 1).toList,
-            fileName = Some(paths.last),
-            content = JGitUtil.getContentInfo(git, path, objectId),
-            protectedBranch = protectedBranch,
-            commit = revCommit.getName
-          )
+        getPathObjectId(git, path, revCommit).map {
+          objectId =>
+            val paths = path.split("/")
+            val info = EditorConfigUtil.getEditorConfigInfo(git, branch, path)
+
+            html.editor(
+              branch = branch,
+              repository = repository,
+              pathList = paths.take(paths.size - 1).toList,
+              fileName = Some(paths.last),
+              content = JGitUtil.getContentInfo(git, path, objectId),
+              protectedBranch = protectedBranch,
+              commit = revCommit.getName,
+              newLineMode = info.newLineMode,
+              useSoftTabs = info.useSoftTabs,
+              tabSize = info.tabSize
+            )
         } getOrElse NotFound()
     }
   })
@@ -375,7 +414,8 @@ trait RepositoryViewerControllerBase extends ControllerBase {
       content = appendNewLine(convertLineSeparator(form.content, form.lineSeparator), form.lineSeparator),
       charset = form.charset,
       message = form.message.getOrElse(s"Create ${form.newFileName}"),
-      commit = form.commit
+      commit = form.commit,
+      loginAccount = context.loginAccount.get
     )
 
     redirect(
@@ -398,7 +438,8 @@ trait RepositoryViewerControllerBase extends ControllerBase {
       } else {
         form.message.getOrElse(s"Rename ${form.oldFileName.get} to ${form.newFileName}")
       },
-      commit = form.commit
+      commit = form.commit,
+      loginAccount = context.loginAccount.get
     )
 
     redirect(
@@ -417,11 +458,14 @@ trait RepositoryViewerControllerBase extends ControllerBase {
       content = "",
       charset = "",
       message = form.message.getOrElse(s"Delete ${form.fileName}"),
-      commit = form.commit
+      commit = form.commit,
+      loginAccount = context.loginAccount.get
     )
 
+    println(form.path)
+
     redirect(
-      s"/${repository.owner}/${repository.name}/tree/${form.branch}${if (form.path.length == 0) "" else form.path}"
+      s"/${repository.owner}/${repository.name}/tree/${form.branch}${if (form.path.length == 0) "" else "/" + form.path}"
     )
   })
 
@@ -451,6 +495,7 @@ trait RepositoryViewerControllerBase extends ControllerBase {
               // Download (This route is left for backword compatibility)
               responseRawFile(git, objectId, path, repository)
             } else {
+              val info = EditorConfigUtil.getEditorConfigInfo(git, id, path)
               html.blob(
                 branch = id,
                 repository = repository,
@@ -459,7 +504,8 @@ trait RepositoryViewerControllerBase extends ControllerBase {
                 latestCommit = new JGitUtil.CommitInfo(JGitUtil.getLastModifiedCommit(git, revCommit, path)),
                 hasWritePermission = hasDeveloperRole(repository.owner, repository.name, context.loginAccount),
                 isBlame = request.paths(2) == "blame",
-                isLfsFile = isLfsFile(git, objectId)
+                isLfsFile = isLfsFile(git, objectId),
+                tabSize = info.tabSize
               )
             }
         } getOrElse NotFound()
@@ -531,7 +577,9 @@ trait RepositoryViewerControllerBase extends ControllerBase {
                 repository,
                 diffs,
                 oldCommitId,
-                hasDeveloperRole(repository.owner, repository.name, context.loginAccount)
+                hasDeveloperRole(repository.owner, repository.name, context.loginAccount),
+                flash.get("info"),
+                flash.get("error")
               )
           }
       }
@@ -568,50 +616,17 @@ trait RepositoryViewerControllerBase extends ControllerBase {
   post("/:owner/:repository/commit/:id/comment/new", commentForm)(readableUsersOnly { (form, repository) =>
     val id = params("id")
     createCommitComment(
-      repository.owner,
-      repository.name,
+      repository,
       id,
-      context.loginAccount.get.userName,
+      context.loginAccount.get,
       form.content,
       form.fileName,
       form.oldLineNumber,
       form.newLineNumber,
+      form.diff,
       form.issueId
     )
 
-    for {
-      fileName <- form.fileName
-      diff <- form.diff
-    } {
-      saveCommitCommentDiff(
-        repository.owner,
-        repository.name,
-        id,
-        fileName,
-        form.oldLineNumber,
-        form.newLineNumber,
-        diff
-      )
-    }
-
-    form.issueId match {
-      case Some(issueId) =>
-        recordCommentPullRequestActivity(
-          repository.owner,
-          repository.name,
-          context.loginAccount.get.userName,
-          issueId,
-          form.content
-        )
-      case None =>
-        recordCommentCommitActivity(
-          repository.owner,
-          repository.name,
-          context.loginAccount.get.userName,
-          id,
-          form.content
-        )
-    }
     redirect(s"/${repository.owner}/${repository.name}/commit/${id}")
   })
 
@@ -636,64 +651,18 @@ trait RepositoryViewerControllerBase extends ControllerBase {
   ajaxPost("/:owner/:repository/commit/:id/comment/_data/new", commentForm)(readableUsersOnly { (form, repository) =>
     val id = params("id")
     val commentId = createCommitComment(
-      repository.owner,
-      repository.name,
+      repository,
       id,
-      context.loginAccount.get.userName,
+      context.loginAccount.get,
       form.content,
       form.fileName,
       form.oldLineNumber,
       form.newLineNumber,
+      form.diff,
       form.issueId
     )
 
-    for {
-      fileName <- form.fileName
-      diff <- form.diff
-    } {
-      saveCommitCommentDiff(
-        repository.owner,
-        repository.name,
-        id,
-        fileName,
-        form.oldLineNumber,
-        form.newLineNumber,
-        diff
-      )
-    }
-
     val comment = getCommitComment(repository.owner, repository.name, commentId.toString).get
-    form.issueId match {
-      case Some(issueId) =>
-        getPullRequest(repository.owner, repository.name, issueId).foreach {
-          case (issue, pullRequest) =>
-            recordCommentPullRequestActivity(
-              repository.owner,
-              repository.name,
-              context.loginAccount.get.userName,
-              issueId,
-              form.content
-            )
-            PluginRegistry().getPullRequestHooks.foreach(_.addedComment(commentId, form.content, issue, repository))
-            callPullRequestReviewCommentWebHook(
-              "create",
-              comment,
-              repository,
-              issue,
-              pullRequest,
-              context.baseUrl,
-              context.loginAccount.get
-            )
-        }
-      case None =>
-        recordCommentCommitActivity(
-          repository.owner,
-          repository.name,
-          context.loginAccount.get.userName,
-          id,
-          form.content
-        )
-    }
     helper.html
       .commitcomment(comment, hasDeveloperRole(repository.owner, repository.name, context.loginAccount), repository)
   })
@@ -711,6 +680,7 @@ trait RepositoryViewerControllerBase extends ControllerBase {
                 "content" -> view.Markdown.toHtml(
                   markdown = x.content,
                   repository = repository,
+                  branch = repository.repository.defaultBranch,
                   enableWikiLink = false,
                   enableRefsLink = true,
                   enableAnchor = true,
@@ -781,6 +751,29 @@ trait RepositoryViewerControllerBase extends ControllerBase {
   })
 
   /**
+   * Displays the create tag dialog.
+   */
+  get("/:owner/:repository/tag/:id")(writableUsersOnly { repository =>
+    html.tag(params("id"), repository)
+  })
+
+  /**
+   * Creates a tag.
+   */
+  post("/:owner/:repository/tag", tagForm)(writableUsersOnly { (form, repository) =>
+    using(Git.open(getRepositoryDir(repository.owner, repository.name))) { git =>
+      JGitUtil.createTag(git, form.tagName, form.message, form.commitId)
+    } match {
+      case Right(message) =>
+        flash += "info" -> message
+        redirect(s"/${repository.owner}/${repository.name}/commit/${form.commitId}")
+      case Left(message) =>
+        flash += "error" -> message
+        redirect(s"/${repository.owner}/${repository.name}/commit/${form.commitId}")
+    }
+  })
+
+  /**
    * Creates a branch.
    */
   post("/:owner/:repository/branches")(writableUsersOnly { repository =>
@@ -822,55 +815,15 @@ trait RepositoryViewerControllerBase extends ControllerBase {
     redirect(s"${repository.owner}/${repository.name}/releases")
   })
 
-  /**
-   * Download repository contents as a zip archive as compatible URL.
-   */
-  get("/:owner/:repository/archive/:branch.zip")(referrersOnly { repository =>
-    val branch = params("branch")
-    archiveRepository(branch, branch + ".zip", repository, "")
-  })
-
-  /**
-   * Download repository contents as a tar.gz archive as compatible URL.
-   */
-  get("/:owner/:repository/archive/:branch.tar.gz")(referrersOnly { repository =>
-    val branch = params("branch")
-    archiveRepository(branch, branch + ".tar.gz", repository, "")
-  })
-
-  /**
-   * Download repository contents as a tar.bz2 archive as compatible URL.
-   */
-  get("/:owner/:repository/archive/:branch.tar.bz2")(referrersOnly { repository =>
-    val branch = params("branch")
-    archiveRepository(branch, branch + ".tar.bz2", repository, "")
-  })
-
-  /**
-   * Download repository contents as a tar.xz archive as compatible URL.
-   */
-  get("/:owner/:repository/archive/:branch.tar.xz")(referrersOnly { repository =>
-    val branch = params("branch")
-    archiveRepository(branch, branch + ".tar.xz", repository, "")
-  })
-
-  /**
-   * Download all repository contents as an archive.
-   */
-  get("/:owner/:repository/archive/:branch/:name")(referrersOnly { repository =>
-    val branch = params("branch")
+  get("/:owner/:repository/archive/:name")(referrersOnly { repository =>
     val name = params("name")
-    archiveRepository(branch, name, repository, "")
+    archiveRepository(name, repository, "")
   })
 
-  /**
-   * Download repositories subtree contents as an archive.
-   */
-  get("/:owner/:repository/archive/:branch/*/:name")(referrersOnly { repository =>
-    val branch = params("branch")
+  get("/:owner/:repository/archive/*/:name")(referrersOnly { repository =>
     val name = params("name")
     val path = multiParams("splat").head
-    archiveRepository(branch, name, repository, path)
+    archiveRepository(name, repository, path)
   })
 
   get("/:owner/:repository/network/members")(referrersOnly { repository =>
@@ -920,185 +873,6 @@ trait RepositoryViewerControllerBase extends ControllerBase {
 
   case class UploadFiles(branch: String, path: String, fileIds: Map[String, String], message: String) {
     lazy val isValid: Boolean = fileIds.nonEmpty
-  }
-
-  case class CommitFile(id: String, name: String)
-
-  private def commitFiles(
-    repository: RepositoryService.RepositoryInfo,
-    files: Seq[CommitFile],
-    branch: String,
-    path: String,
-    message: String
-  ) = {
-    // prepend path to the filename
-    val newFiles = files.map { file =>
-      file.copy(name = if (path.length == 0) file.name else s"${path}/${file.name}")
-    }
-
-    _commitFile(repository, branch, message) {
-      case (git, headTip, builder, inserter) =>
-        JGitUtil.processTree(git, headTip) { (path, tree) =>
-          if (!newFiles.exists(_.name.contains(path))) {
-            builder.add(JGitUtil.createDirCacheEntry(path, tree.getEntryFileMode, tree.getEntryObjectId))
-          }
-        }
-
-        newFiles.foreach { file =>
-          val bytes =
-            FileUtils.readFileToByteArray(new File(getTemporaryDir(session.getId), FileUtil.checkFilename(file.id)))
-          builder.add(
-            JGitUtil.createDirCacheEntry(file.name, FileMode.REGULAR_FILE, inserter.insert(Constants.OBJ_BLOB, bytes))
-          )
-          builder.finish()
-        }
-    }
-  }
-
-  private def commitFile(
-    repository: RepositoryService.RepositoryInfo,
-    branch: String,
-    path: String,
-    newFileName: Option[String],
-    oldFileName: Option[String],
-    content: String,
-    charset: String,
-    message: String,
-    commit: String
-  ) = {
-
-    val newPath = newFileName.map { newFileName =>
-      if (path.length == 0) newFileName else s"${path}/${newFileName}"
-    }
-    val oldPath = oldFileName.map { oldFileName =>
-      if (path.length == 0) oldFileName else s"${path}/${oldFileName}"
-    }
-
-    _commitFile(repository, branch, message) {
-      case (git, headTip, builder, inserter) =>
-        if (headTip.getName == commit) {
-          val permission = JGitUtil
-            .processTree(git, headTip) { (path, tree) =>
-              // Add all entries except the editing file
-              if (!newPath.contains(path) && !oldPath.contains(path)) {
-                builder.add(JGitUtil.createDirCacheEntry(path, tree.getEntryFileMode, tree.getEntryObjectId))
-              }
-              // Retrieve permission if file exists to keep it
-              oldPath.collect { case x if x == path => tree.getEntryFileMode.getBits }
-            }
-            .flatten
-            .headOption
-
-          newPath.foreach { newPath =>
-            builder.add(JGitUtil.createDirCacheEntry(newPath, permission.map { bits =>
-              FileMode.fromBits(bits)
-            } getOrElse FileMode.REGULAR_FILE, inserter.insert(Constants.OBJ_BLOB, content.getBytes(charset))))
-          }
-          builder.finish()
-        }
-    }
-  }
-
-  private def _commitFile(repository: RepositoryService.RepositoryInfo, branch: String, message: String)(
-    f: (Git, ObjectId, DirCacheBuilder, ObjectInserter) => Unit
-  ) = {
-
-    LockUtil.lock(s"${repository.owner}/${repository.name}") {
-      using(Git.open(getRepositoryDir(repository.owner, repository.name))) { git =>
-        val loginAccount = context.loginAccount.get
-        val builder = DirCache.newInCore.builder()
-        val inserter = git.getRepository.newObjectInserter()
-        val headName = s"refs/heads/${branch}"
-        val headTip = git.getRepository.resolve(headName)
-
-        f(git, headTip, builder, inserter)
-
-        val commitId = JGitUtil.createNewCommit(
-          git,
-          inserter,
-          headTip,
-          builder.getDirCache.writeTree(inserter),
-          headName,
-          loginAccount.fullName,
-          loginAccount.mailAddress,
-          message
-        )
-
-        inserter.flush()
-        inserter.close()
-
-        val receivePack = new ReceivePack(git.getRepository)
-        val receiveCommand = new ReceiveCommand(headTip, commitId, headName)
-
-        // call post commit hook
-        val error = PluginRegistry().getReceiveHooks.flatMap { hook =>
-          hook.preReceive(repository.owner, repository.name, receivePack, receiveCommand, loginAccount.userName)
-        }.headOption
-
-        error match {
-          case Some(error) =>
-            // commit is rejected
-            // TODO Notify commit failure to edited user
-            val refUpdate = git.getRepository.updateRef(headName)
-            refUpdate.setNewObjectId(headTip)
-            refUpdate.setForceUpdate(true)
-            refUpdate.update()
-
-          case None =>
-            // update refs
-            val refUpdate = git.getRepository.updateRef(headName)
-            refUpdate.setNewObjectId(commitId)
-            refUpdate.setForceUpdate(false)
-            refUpdate.setRefLogIdent(new PersonIdent(loginAccount.fullName, loginAccount.mailAddress))
-            refUpdate.update()
-
-            // update pull request
-            updatePullRequests(repository.owner, repository.name, branch)
-
-            // record activity
-            val commitInfo = new CommitInfo(JGitUtil.getRevCommitFromId(git, commitId))
-            recordPushActivity(repository.owner, repository.name, loginAccount.userName, branch, List(commitInfo))
-
-            // create issue comment by commit message
-            createIssueComment(repository.owner, repository.name, commitInfo)
-
-            // close issue by commit message
-            if (branch == repository.repository.defaultBranch) {
-              closeIssuesFromMessage(message, loginAccount.userName, repository.owner, repository.name).foreach {
-                issueId =>
-                  getIssue(repository.owner, repository.name, issueId.toString).map { issue =>
-                    callIssuesWebHook("closed", repository, issue, baseUrl, loginAccount)
-                    PluginRegistry().getIssueHooks
-                      .foreach(_.closedByCommitComment(issue, repository, message, loginAccount))
-                  }
-              }
-            }
-
-            // call post commit hook
-            PluginRegistry().getReceiveHooks.foreach { hook =>
-              hook.postReceive(repository.owner, repository.name, receivePack, receiveCommand, loginAccount.userName)
-            }
-
-            //call web hook
-            callPullRequestWebHookByRequestBranch("synchronize", repository, branch, context.baseUrl, loginAccount)
-            val commit = new JGitUtil.CommitInfo(JGitUtil.getRevCommitFromId(git, commitId))
-            callWebHookOf(repository.owner, repository.name, WebHook.Push) {
-              getAccountByUserName(repository.owner).map { ownerAccount =>
-                WebHookPushPayload(
-                  git,
-                  loginAccount,
-                  headName,
-                  repository,
-                  List(commit),
-                  ownerAccount,
-                  oldId = headTip,
-                  newId = commitId
-                )
-              }
-            }
-        }
-      }
-    }
   }
 
   private val readmeFiles = PluginRegistry().renderableExtensions.map { extension =>
@@ -1166,24 +940,24 @@ trait RepositoryViewerControllerBase extends ControllerBase {
   }
 
   private def archiveRepository(
-    revision: String,
     filename: String,
     repository: RepositoryService.RepositoryInfo,
     path: String
   ) = {
-    def archive(archiveFormat: String, archive: ArchiveOutputStream)(
-      entryCreator: (String, Long, Int) => ArchiveEntry
+    def archive(revision: String, archiveFormat: String, archive: ArchiveOutputStream)(
+      entryCreator: (String, Long, java.util.Date, Int) => ArchiveEntry
     ): Unit = {
       using(Git.open(getRepositoryDir(repository.owner, repository.name))) { git =>
         val oid = git.getRepository.resolve(revision)
-        val revCommit = JGitUtil.getRevCommitFromId(git, oid)
+        val commit = JGitUtil.getRevCommitFromId(git, oid)
+        val date = commit.getCommitterIdent.getWhen
         val sha1 = oid.getName()
         val repositorySuffix = (if (sha1.startsWith(revision)) sha1 else revision).replace('/', '-')
         val pathSuffix = if (path.isEmpty) "" else '-' + path.replace('/', '-')
         val baseName = repository.name + "-" + repositorySuffix + pathSuffix
 
         using(new TreeWalk(git.getRepository)) { treeWalk =>
-          treeWalk.addTree(revCommit.getTree)
+          treeWalk.addTree(commit.getTree)
           treeWalk.setRecursive(true)
           if (!path.isEmpty) {
             treeWalk.setFilter(PathFilter.create(path))
@@ -1195,8 +969,8 @@ trait RepositoryViewerControllerBase extends ControllerBase {
                 else path.split("/").last + treeWalk.getPathString.substring(path.length)
               val size = JGitUtil.getFileSize(git, repository, treeWalk)
               val mode = treeWalk.getFileMode.getBits
-              val entry: ArchiveEntry = entryCreator(entryPath, size, mode)
-              JGitUtil.openFile(git, repository, revCommit.getTree, treeWalk.getPathString) { in =>
+              val entry: ArchiveEntry = entryCreator(entryPath, size, date, mode)
+              JGitUtil.openFile(git, repository, commit.getTree, treeWalk.getPathString) { in =>
                 archive.putArchiveEntry(entry)
                 IOUtils.copy(in, archive)
                 archive.closeArchiveEntry()
@@ -1213,26 +987,27 @@ trait RepositoryViewerControllerBase extends ControllerBase {
     val tarRe = """(.+)\.tar\.(gz|bz2|xz)$""".r
 
     filename match {
-      case zipRe(branch) =>
+      case zipRe(revision) =>
         response.setHeader(
           "Content-Disposition",
-          s"attachment; filename=${repository.name}-${branch}${suffix}.zip"
+          s"attachment; filename=${repository.name}-${revision}${suffix}.zip"
         )
         contentType = "application/octet-stream"
-        response.setBufferSize(1024 * 1024);
+        response.setBufferSize(1024 * 1024)
         using(new ZipArchiveOutputStream(response.getOutputStream)) { zip =>
-          archive(".zip", zip) { (path, size, mode) =>
+          archive(revision, ".zip", zip) { (path, size, date, mode) =>
             val entry = new ZipArchiveEntry(path)
             entry.setSize(size)
             entry.setUnixMode(mode)
+            entry.setTime(date.getTime)
             entry
           }
         }
         ()
-      case tarRe(branch, compressor) =>
+      case tarRe(revision, compressor) =>
         response.setHeader(
           "Content-Disposition",
-          s"attachment; filename=${repository.name}-${branch}${suffix}.tar.${compressor}"
+          s"attachment; filename=${repository.name}-${revision}${suffix}.tar.${compressor}"
         )
         contentType = "application/octet-stream"
         response.setBufferSize(1024 * 1024)
@@ -1245,9 +1020,10 @@ trait RepositoryViewerControllerBase extends ControllerBase {
             tar.setBigNumberMode(TarArchiveOutputStream.BIGNUMBER_STAR)
             tar.setLongFileMode(TarArchiveOutputStream.LONGFILE_GNU)
             tar.setAddPaxHeadersForNonAsciiNames(true)
-            archive(".tar.gz", tar) { (path, size, mode) =>
+            archive(revision, ".tar.gz", tar) { (path, size, date, mode) =>
               val entry = new TarArchiveEntry(path)
               entry.setSize(size)
+              entry.setModTime(date)
               entry.setMode(mode)
               entry
             }
@@ -1255,7 +1031,7 @@ trait RepositoryViewerControllerBase extends ControllerBase {
         }
         ()
       case _ =>
-        BadRequest()
+        NotFound()
     }
   }
 

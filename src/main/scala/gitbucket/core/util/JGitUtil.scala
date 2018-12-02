@@ -24,12 +24,7 @@ import java.util.concurrent.TimeUnit
 import java.util.function.Consumer
 
 import org.cache2k.Cache2kBuilder
-import org.eclipse.jgit.api.errors.{
-  InvalidRefNameException,
-  JGitInternalException,
-  NoHeadException,
-  RefAlreadyExistsException
-}
+import org.eclipse.jgit.api.errors._
 import org.eclipse.jgit.diff.{DiffEntry, DiffFormatter, RawTextComparator}
 import org.eclipse.jgit.dircache.DirCacheEntry
 import org.eclipse.jgit.util.io.DisabledOutputStream
@@ -391,7 +386,7 @@ object JGitUtil {
             lazy val newParentsMap = newCommit.getParents.map(_ -> newCommit).toMap
             useTreeWalk(newCommit) { walk =>
               while (walk.next) {
-                rest.remove(walk.getNameString -> walk.getObjectId(0)).map {
+                rest.remove(walk.getNameString -> walk.getObjectId(0)).foreach {
                   case (tuple, _) =>
                     if (newParentsMap.isEmpty) {
                       nextResult +:= tupleAdd(tuple, newCommit)
@@ -401,7 +396,7 @@ object JGitUtil {
                 }
               }
             }
-            rest.values.map {
+            rest.values.foreach {
               case (tuple, parentsMap) =>
                 val restParentsMap = parentsMap - newCommit
                 if (restParentsMap.isEmpty) {
@@ -619,8 +614,12 @@ object JGitUtil {
     df.setRepository(git.getRepository)
     df.setDiffComparator(RawTextComparator.DEFAULT)
     df.setDetectRenames(true)
-    df.format(getDiffEntries(git, from, to).head)
-    new String(out.toByteArray, "UTF-8")
+    getDiffEntries(git, from, to)
+      .map { entry =>
+        df.format(entry)
+        new String(out.toByteArray, "UTF-8")
+      }
+      .mkString("\n")
   }
 
   private def getDiffEntries(git: Git, from: Option[String], to: String): Seq[DiffEntry] = {
@@ -746,15 +745,17 @@ object JGitUtil {
   def getBranchesOfCommit(git: Git, commitId: String): List[String] =
     using(new RevWalk(git.getRepository)) { revWalk =>
       defining(revWalk.parseCommit(git.getRepository.resolve(commitId + "^0"))) { commit =>
-        git.getRepository.getAllRefs.entrySet.asScala
+        git.getRepository.getRefDatabase
+          .getRefsByPrefix(Constants.R_HEADS)
+          .asScala
           .filter { e =>
-            (e.getKey.startsWith(Constants.R_HEADS) && revWalk.isMergedInto(
+            (revWalk.isMergedInto(
               commit,
-              revWalk.parseCommit(e.getValue.getObjectId)
+              revWalk.parseCommit(e.getObjectId)
             ))
           }
           .map { e =>
-            e.getValue.getName.substring(org.eclipse.jgit.lib.Constants.R_HEADS.length)
+            e.getName.substring(Constants.R_HEADS.length)
           }
           .toList
           .sorted
@@ -787,15 +788,17 @@ object JGitUtil {
   def getTagsOfCommit(git: Git, commitId: String): List[String] =
     using(new RevWalk(git.getRepository)) { revWalk =>
       defining(revWalk.parseCommit(git.getRepository.resolve(commitId + "^0"))) { commit =>
-        git.getRepository.getAllRefs.entrySet.asScala
+        git.getRepository.getRefDatabase
+          .getRefsByPrefix(Constants.R_TAGS)
+          .asScala
           .filter { e =>
-            (e.getKey.startsWith(Constants.R_TAGS) && revWalk.isMergedInto(
+            (revWalk.isMergedInto(
               commit,
-              revWalk.parseCommit(e.getValue.getObjectId)
+              revWalk.parseCommit(e.getObjectId)
             ))
           }
           .map { e =>
-            e.getValue.getName.substring(org.eclipse.jgit.lib.Constants.R_TAGS.length)
+            e.getName.substring(Constants.R_TAGS.length)
           }
           .toList
           .sorted
@@ -835,6 +838,25 @@ object JGitUtil {
         case None      => None
       }
       .find(_._1 != null)
+  }
+
+  def createTag(git: Git, name: String, message: Option[String], commitId: String) = {
+    try {
+      val objectId: ObjectId = git.getRepository.resolve(commitId)
+      using(new RevWalk(git.getRepository)) { walk =>
+        val tagCommand = git.tag().setName(name).setObjectId(walk.parseCommit(objectId))
+        message.foreach { message =>
+          tagCommand.setMessage(message)
+        }
+        tagCommand.call()
+      }
+      Right("Tag added.")
+    } catch {
+      case e: GitAPIException              => Left("Sorry, some Git operation error occurs.")
+      case e: ConcurrentRefUpdateException => Left("Sorry some error occurs.")
+      case e: InvalidTagNameException      => Left("Sorry, that name is invalid.")
+      case e: NoHeadException              => Left("Sorry, this repo doesn't have HEAD reference")
+    }
   }
 
   def createBranch(git: Git, fromBranch: String, newBranch: String) = {
